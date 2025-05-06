@@ -30,14 +30,20 @@ if 'map_initialized' not in st.session_state:
 st.sidebar.header("📍 Location & Destination")
 city = st.sidebar.text_input("Search City", value="London", help="Enter a city name (e.g., London, Karachi, New York)")
 if st.sidebar.button("Set Location"):
-    lat, lon, bbox = geocode_city(city)
-    if lat and lon:
-        st.session_state.current_lat = lat
-        st.session_state.current_lon = lon
-        st.session_state.bbox = bbox
-        st.session_state.pois = get_pois(lat, lon)
-        st.session_state.map_initialized = False
-        st.rerun()
+    try:
+        lat, lon, bbox = geocode_city(city)
+        if lat and lon:
+            st.session_state.current_lat = lat
+            st.session_state.current_lon = lon
+            st.session_state.bbox = bbox
+            st.session_state.pois = get_pois(lat, lon)
+            st.session_state.map_initialized = False
+            st.rerun()
+    except Exception as e:
+        if "Insufficient credits" in str(e):
+            st.sidebar.error("TomTom API error: Insufficient credits. Please add credits to your account on the TomTom developer portal.")
+        else:
+            st.sidebar.error(f"Error setting location: {e}")
 
 # Destination selection
 st.sidebar.subheader("🏁 Select Destination")
@@ -52,10 +58,16 @@ if st.sidebar.button("Calculate Route"):
 
 # Refresh button
 if st.button("🔄 Refresh Data"):
-    lat, lon, bbox = st.session_state.current_lat, st.session_state.current_lon, st.session_state.get('bbox', "51.50,-0.15,51.52,-0.10")
-    st.session_state.pois = get_pois(lat, lon)
-    st.session_state.map_initialized = False
-    st.rerun()
+    try:
+        lat, lon, bbox = st.session_state.current_lat, st.session_state.current_lon, st.session_state.get('bbox', "51.50,-0.15,51.52,-0.10")
+        st.session_state.pois = get_pois(lat, lon)
+        st.session_state.map_initialized = False
+        st.rerun()
+    except Exception as e:
+        if "Insufficient credits" in str(e):
+            st.error("TomTom API error: Insufficient credits. Please add credits to your account on the TomTom developer portal.")
+        else:
+            st.error(f"Error refreshing data: {e}")
 
 # Fetch live data (non-reactive block)
 @st.cache_data(ttl=300)  # Cache for 5 minutes to reduce API calls
@@ -94,11 +106,17 @@ with col3:
 # Travel Time and Route
 st.subheader("🕒 Travel Information")
 if st.session_state.dest_lat and st.session_state.dest_lon:
-    route_data = get_route_with_traffic(lat, lon, st.session_state.dest_lat, st.session_state.dest_lon, city)
-    if route_data:
-        st.info(f"Estimated Travel Time: {route_data['travel_time_minutes']:.1f} minutes ({route_data['distance_km']:.1f} km)")
-    else:
-        st.warning("Unable to calculate travel time. Check API key or permissions.")
+    try:
+        route_data = get_route_with_traffic(lat, lon, st.session_state.dest_lat, st.session_state.dest_lon, city)
+        if route_data:
+            st.info(f"Estimated Travel Time: {route_data['travel_time_minutes']:.1f} minutes ({route_data['distance_km']:.1f} km)")
+        else:
+            st.warning("Unable to calculate travel time. Check API key or permissions.")
+    except Exception as e:
+        if "Insufficient credits" in str(e):
+            st.error("TomTom API error: Insufficient credits. Please add credits to your account on the TomTom developer portal.")
+        else:
+            st.error(f"Error calculating route: {e}")
 else:
     st.write("Set a destination to see travel time.")
 
@@ -123,29 +141,38 @@ if st.session_state.dest_lat and st.session_state.dest_lon:
 
 # Add route with traffic conditions
 if st.session_state.dest_lat and st.session_state.dest_lon:
-    route_data = get_route_with_traffic(lat, lon, st.session_state.dest_lat, st.session_state.dest_lon, city)
-    if route_data:
-        all_coords = []
-        for segment in route_data['segments']:
-            all_coords.extend(segment['coordinates'])
-            color = {'Low': 'green', 'Medium': 'orange', 'High': 'red'}.get(segment['congestion_level'], 'gray')
-            folium.PolyLine(
-                locations=segment['coordinates'],
-                color=color,
-                weight=5,
-                opacity=0.7,
-                tooltip=f"Congestion: {segment['congestion_level']}"
-            ).add_to(m)
-        if all_coords:
-            folium.PolyLine(
-                locations=all_coords,
-                color='blue',
-                weight=2,
-                opacity=0.5,
-                tooltip="Overall Route"
-            ).add_to(m)
-    else:
-        st.warning("Route data unavailable due to API error.")
+    try:
+        route_data = get_route_with_traffic(lat, lon, st.session_state.dest_lat, st.session_state.dest_lon, city)
+        if route_data:
+            all_coords = []
+            # Draw congestion segments first (broader lines)
+            for segment in route_data['segments']:
+                all_coords.extend(segment['coordinates'])
+                color_map = {'Low': '#008000', 'Medium': '#FFFF00', 'High': '#FF0000', 'Unknown': '#808080'}
+                color = color_map.get(segment['congestion_level'], '#808080')  # Grey for unknown or alternate
+                folium.PolyLine(
+                    locations=segment['coordinates'],
+                    color=color,
+                    weight=8,  # Thicker line for congestion segments
+                    opacity=0.8,
+                    tooltip=f"Congestion: {segment['congestion_level']}"
+                ).add_to(m)
+            # Draw the overall route on top (slightly thinner, dark blue)
+            if all_coords:
+                folium.PolyLine(
+                    locations=all_coords,
+                    color='#00008B',  # Dark blue for overall route
+                    weight=4,  # Slightly thinner than segment lines
+                    opacity=0.6,
+                    tooltip="Overall Route"
+                ).add_to(m)
+        else:
+            st.warning("Route data unavailable due to API error.")
+    except Exception as e:
+        if "Insufficient credits" in str(e):
+            st.error("TomTom API error: Insufficient credits. Please add credits to your account on the TomTom developer portal.")
+        else:
+            st.error(f"Error displaying route: {e}")
 
 # Add incidents
 for incident in incidents.get('incidents', []):
