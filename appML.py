@@ -25,14 +25,6 @@ if 'confirm_switch' not in st.session_state:
     st.session_state.confirm_switch = False
 if 'map_initialized' not in st.session_state:
     st.session_state.map_initialized = False
-if 'map_zoom' not in st.session_state:
-    st.session_state.map_zoom = 12
-if 'map_center' not in st.session_state:
-    st.session_state.map_center = [51.51, -0.12]
-if 'route_options' not in st.session_state:
-    st.session_state.route_options = []
-if 'selected_route' not in st.session_state:
-    st.session_state.selected_route = 0  # Default to primary route
 
 # Sidebar for user-friendly settings
 st.sidebar.header("📍 Location & Destination")
@@ -44,9 +36,7 @@ if st.sidebar.button("Set Location"):
         st.session_state.current_lon = lon
         st.session_state.bbox = bbox
         st.session_state.pois = get_pois(lat, lon)
-        st.session_state.map_center = [lat, lon]
         st.session_state.map_initialized = False
-        st.session_state.route_options = []  # Reset routes on location change
         st.rerun()
 
 # Destination selection
@@ -57,7 +47,6 @@ if dest_option != "Click Map to Set":
     dest_lat, dest_lon = map(float, dest_coords.rstrip(")").split(", "))
     st.session_state.dest_lat = dest_lat
     st.session_state.dest_lon = dest_lon
-    st.session_state.route_options = []  # Reset routes on destination change
 if st.sidebar.button("Calculate Route"):
     st.rerun()
 
@@ -66,7 +55,6 @@ if st.button("🔄 Refresh Data"):
     lat, lon, bbox = st.session_state.current_lat, st.session_state.current_lon, st.session_state.get('bbox', "51.50,-0.15,51.52,-0.10")
     st.session_state.pois = get_pois(lat, lon)
     st.session_state.map_initialized = False
-    st.session_state.route_options = []
     st.rerun()
 
 # Fetch live data (non-reactive block)
@@ -106,35 +94,17 @@ with col3:
 # Travel Time and Route
 st.subheader("🕒 Travel Information")
 if st.session_state.dest_lat and st.session_state.dest_lon:
-    # Fetch primary route if no routes are cached
-    if not st.session_state.route_options:
-        route_options = get_route_with_traffic(lat, lon, st.session_state.dest_lat, st.session_state.dest_lon, city, alternatives=False)
-        if route_options:
-            primary_route = route_options[0]
-            # If primary route has high congestion, fetch alternatives
-            if primary_route['overall_congestion_level'] == "High":
-                st.warning("High congestion detected on primary route. Fetching alternative routes...")
-                route_options = get_route_with_traffic(lat, lon, st.session_state.dest_lat, st.session_state.dest_lon, city, alternatives=True)
-            st.session_state.route_options = route_options if route_options else []
-
-    # Display route options
-    if st.session_state.route_options:
-        route_labels = [
-            f"Route {r['route_id'] + 1}: {r['travel_time_minutes']:.1f} mins, {r['distance_km']:.1f} km, Congestion: {r['overall_congestion_level']}"
-            for r in st.session_state.route_options
-        ]
-        selected_route_label = st.selectbox("Select Route", route_labels, index=st.session_state.selected_route)
-        st.session_state.selected_route = route_labels.index(selected_route_label)
-        selected_route = st.session_state.route_options[st.session_state.selected_route]
-        st.info(f"Estimated Travel Time: {selected_route['travel_time_minutes']:.1f} minutes ({selected_route['distance_km']:.1f} km)")
+    route_data = get_route_with_traffic(lat, lon, st.session_state.dest_lat, st.session_state.dest_lon, city)
+    if route_data:
+        st.info(f"Estimated Travel Time: {route_data['travel_time_minutes']:.1f} minutes ({route_data['distance_km']:.1f} km)")
     else:
-        st.warning("Unable to calculate travel time.")
+        st.warning("Unable to calculate travel time. Check API key or permissions.")
 else:
     st.write("Set a destination to see travel time.")
 
 # Map with interactive features
 st.subheader("🗺️ Live Traffic Map")
-m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, control_scale=True)
+m = folium.Map(location=[lat, lon], zoom_start=12, control_scale=True)
 
 # Add current location marker (car icon)
 folium.Marker(
@@ -151,28 +121,31 @@ if st.session_state.dest_lat and st.session_state.dest_lon:
         tooltip="Destination"
     ).add_to(m)
 
-# Add selected route with traffic conditions
-if st.session_state.dest_lat and st.session_state.dest_lon and st.session_state.route_options:
-    selected_route = st.session_state.route_options[st.session_state.selected_route]
-    all_coords = []
-    for segment in selected_route['segments']:
-        all_coords.extend(segment['coordinates'])
-        color = {'Low': 'green', 'Medium': 'orange', 'High': 'red'}.get(segment['congestion_level'], 'gray')
-        folium.PolyLine(
-            locations=segment['coordinates'],
-            color=color,
-            weight=5,
-            opacity=0.7,
-            tooltip=f"Congestion: {segment['congestion_level']}"
-        ).add_to(m)
-    if all_coords:
-        folium.PolyLine(
-            locations=all_coords,
-            color='blue',
-            weight=2,
-            opacity=0.5,
-            tooltip="Overall Route"
-        ).add_to(m)
+# Add route with traffic conditions
+if st.session_state.dest_lat and st.session_state.dest_lon:
+    route_data = get_route_with_traffic(lat, lon, st.session_state.dest_lat, st.session_state.dest_lon, city)
+    if route_data:
+        all_coords = []
+        for segment in route_data['segments']:
+            all_coords.extend(segment['coordinates'])
+            color = {'Low': 'green', 'Medium': 'orange', 'High': 'red'}.get(segment['congestion_level'], 'gray')
+            folium.PolyLine(
+                locations=segment['coordinates'],
+                color=color,
+                weight=5,
+                opacity=0.7,
+                tooltip=f"Congestion: {segment['congestion_level']}"
+            ).add_to(m)
+        if all_coords:
+            folium.PolyLine(
+                locations=all_coords,
+                color='blue',
+                weight=2,
+                opacity=0.5,
+                tooltip="Overall Route"
+            ).add_to(m)
+    else:
+        st.warning("Route data unavailable due to API error.")
 
 # Add incidents
 for incident in incidents.get('incidents', []):
@@ -185,7 +158,7 @@ for incident in incidents.get('incidents', []):
     ).add_to(m)
 
 # Handle click events with confirmation
-map_data = st_folium(m, width=700, height=400, key="map", returned_objects=["last_clicked", "center", "zoom"])
+map_data = st_folium(m, width=700, height=400, key="map")
 if map_data and map_data.get('last_clicked') and not st.session_state.confirm_switch:
     clicked_lat = map_data['last_clicked']['lat']
     clicked_lng = map_data['last_clicked']['lng']
@@ -197,7 +170,6 @@ if map_data and map_data.get('last_clicked') and not st.session_state.confirm_sw
             st.session_state.dest_lat = clicked_lat
             st.session_state.dest_lon = clicked_lng
             st.session_state.confirm_switch = True
-            st.session_state.route_options = []
             st.rerun()
     with col2:
         if st.button("No", key="confirm_no"):
@@ -224,13 +196,6 @@ elif st.session_state.confirm_switch and st.session_state.last_clicked:
             break
     st.write(click_info)
     st.session_state.confirm_switch = False
-
-# Update map zoom and center
-if map_data:
-    if map_data.get('zoom') and map_data['zoom'] != st.session_state.map_zoom:
-        st.session_state.map_zoom = map_data['zoom']
-    if map_data.get('center') and map_data['center'] != st.session_state.map_center:
-        st.session_state.map_center = [map_data['center']['lat'], map_data['center']['lng']]
 
 # Alerts
 st.subheader("🚨 Alerts")
