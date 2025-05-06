@@ -4,7 +4,8 @@ import joblib
 from fetch_tomtom import get_traffic_data, get_incident_data
 from fetch_openweather import get_weather_data
 
-TOMTOM_API_KEY = "zy5PaNZytiCexgFfx4zdvIYPrpfKAal3"
+# Updated with your new TomTom API key
+TOMTOM_API_KEY = "I964aUjk3OZ8GBAIMd7tqtjOU5Bs76Nm"
 OPENWEATHERMAP_API_KEY = "5c3bc13964691a682f63c98f718091e5"
 
 # Load the trained model, scaler, and label encoder
@@ -14,10 +15,10 @@ le = joblib.load('label_encoder.pkl')
 
 def geocode_city(city_name):
     """
-    Convert city name to latitude, longitude, and bounding box using TomTom Search API.
+    Convert city name to latitude, longitude, and bounding box using TomTom Geocoding API.
     """
     try:
-        search_url = f"https://api.tomtom.com/search/2/search/{city_name}.json?key={TOMTOM_API_KEY}&limit=1"
+        search_url = f"https://api.tomtom.com/search/2/geocode/{city_name}.json?key={TOMTOM_API_KEY}&limit=1"
         response = requests.get(search_url, timeout=10)
         response.raise_for_status()
         data = response.json()
@@ -31,11 +32,13 @@ def geocode_city(city_name):
         return None, None, None
     except requests.exceptions.RequestException as e:
         print(f"Error geocoding city: {e}")
+        if e.response is not None and "InsufficientFunds" in e.response.text:
+            raise Exception("TomTom API: Insufficient credits. Please add credits to your account.")
         return None, None, None
 
 def get_pois(lat, lon, category="7315"):  # 7315 = Hospitals
     """
-    Fetch nearby points of interest (e.g., hospitals) using TomTom Search API.
+    Fetch nearby points of interest (e.g., hospitals) using TomTom Nearby Search API.
     """
     try:
         search_url = (
@@ -49,6 +52,8 @@ def get_pois(lat, lon, category="7315"):  # 7315 = Hospitals
                 for result in data.get('results', []) if 'poi' in result}
     except requests.exceptions.RequestException as e:
         print(f"Error fetching POIs: {e}")
+        if e.response is not None and "InsufficientFunds" in e.response.text:
+            raise Exception("TomTom API: Insufficient credits. Please add credits to your account.")
         return {}
 
 def get_all_data(city_name, lat, lon, bbox):
@@ -102,11 +107,8 @@ def estimate_congestion(traffic, weather, incidents, city_name):
         # One-hot encode categorical features
         input_data = pd.get_dummies(input_data, columns=['location', 'weather_condition'], drop_first=True)
 
-        # Align with training columns
-        missing_cols = set(model.feature_names_in_) - set(input_data.columns)
-        for col in missing_cols:
-            input_data[col] = 0
-        input_data = input_data[model.feature_names_in_]
+        # Align with training columns in one step
+        input_data = input_data.reindex(columns=model.feature_names_in_, fill_value=0)
 
         # Scale numerical features
         numerical_cols = ['current_speed', 'free_flow_speed', 'incident_count', 'temperature', 'wind_speed']
@@ -124,81 +126,69 @@ def estimate_congestion(traffic, weather, incidents, city_name):
         print(f"Error estimating congestion: {e}")
         return "Unknown"
 
-def get_route_with_traffic(start_lat, start_lon, end_lat, end_lon, city_name, alternatives=False):
+def get_route_with_traffic(start_lat, start_lon, end_lat, end_lon, city_name):
     """
-    Fetch route(s) from start to end and estimate traffic conditions for segments.
-    If alternatives=True, fetch up to 2 alternative routes.
-    Returns a list of route options with segments, travel time, distance, and congestion.
+    Fetch route from start to end and estimate traffic conditions for segments.
+    Returns route segments with coordinates and traffic status.
     """
     try:
-        max_alternatives = 2 if alternatives else 0
         route_url = (
             f"https://api.tomtom.com/routing/1/calculateRoute/"
             f"{start_lat},{start_lon}:{end_lat},{end_lon}/json?"
-            f"traffic=true&routeType=shortest&maxAlternatives={max_alternatives}&key={TOMTOM_API_KEY}"
+            f"key={TOMTOM_API_KEY}&routeType=shortest&travelMode=car&traffic=true"
         )
         response = requests.get(route_url, timeout=10)
         response.raise_for_status()
         route_data = response.json()
         routes = route_data.get('routes', [])
         if not routes:
+            print("No routes returned from API.")
             return None
 
-        route_options = []
-        for idx, route in enumerate(routes):
-            travel_time_minutes = route['summary']['travelTimeInSeconds'] / 60
-            distance_km = route['summary']['lengthInMeters'] / 1000
+        route = routes[0]
+        travel_time_minutes = route['summary']['travelTimeInSeconds'] / 60
+        distance_km = route['summary']['lengthInMeters'] / 1000
 
-            # Collect all coordinates
-            coordinates = []
-            for leg in route['legs']:
-                for point in leg['points']:
-                    coordinates.append([point['latitude'], point['longitude']])
+        # Collect all coordinates
+        coordinates = []
+        for leg in route['legs']:
+            for point in leg['points']:
+                coordinates.append([point['latitude'], point['longitude']])
 
-            # Break into segments for congestion estimation
-            segments = []
-            segment_size = max(2, len(coordinates) // 10)
-            overall_congestion = []
-            for i in range(0, len(coordinates), segment_size):
-                segment_coords = coordinates[i:i + segment_size]
-                if len(segment_coords) < 2:
-                    continue
-                mid_point = segment_coords[len(segment_coords) // 2]
+        # Ensure continuous segments with smaller granularity
+        segments = []
+        segment_size = max(2, len(coordinates) // 10)  # Dynamic segment size based on route length
+        for i in range(0, len(coordinates), segment_size):
+            segment_coords = coordinates[i:i + segment_size]
+            if len(segment_coords) < 2:
+                continue
+            mid_point = segment_coords[len(segment_coords) // 2]
+            traffic_data = get_traffic_data(None, mid_point[0], mid_point[1])
+            congestion_level = estimate_congestion(traffic_data, {}, {}, city_name) if traffic_data else "Unknown"
+            segments.append({
+                'coordinates': segment_coords,
+                'congestion_level': congestion_level
+            })
+
+        # Ensure the last segment includes remaining points
+        if coordinates and i + segment_size < len(coordinates):
+            last_segment = coordinates[i:]
+            if len(last_segment) >= 2:
+                mid_point = last_segment[len(last_segment) // 2]
                 traffic_data = get_traffic_data(None, mid_point[0], mid_point[1])
                 congestion_level = estimate_congestion(traffic_data, {}, {}, city_name) if traffic_data else "Unknown"
                 segments.append({
-                    'coordinates': segment_coords,
+                    'coordinates': last_segment,
                     'congestion_level': congestion_level
                 })
-                if congestion_level != "Unknown":
-                    overall_congestion.append(congestion_level)
 
-            # Ensure the last segment includes remaining points
-            if coordinates and i + segment_size < len(coordinates):
-                last_segment = coordinates[i:]
-                if len(last_segment) >= 2:
-                    mid_point = last_segment[len(last_segment) // 2]
-                    traffic_data = get_traffic_data(None, mid_point[0], mid_point[1])
-                    congestion_level = estimate_congestion(traffic_data, {}, {}, city_name) if traffic_data else "Unknown"
-                    segments.append({
-                        'coordinates': last_segment,
-                        'congestion_level': congestion_level
-                    })
-                    if congestion_level != "Unknown":
-                        overall_congestion.append(congestion_level)
-
-            # Determine overall congestion level (most frequent)
-            overall_congestion_level = max(set(overall_congestion), key=overall_congestion.count, default="Unknown")
-
-            route_options.append({
-                'route_id': idx,
-                'segments': segments,
-                'travel_time_minutes': travel_time_minutes,
-                'distance_km': distance_km,
-                'overall_congestion_level': overall_congestion_level
-            })
-
-        return route_options
+        return {
+            'segments': segments,
+            'travel_time_minutes': travel_time_minutes,
+            'distance_km': distance_km
+        }
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching route: {e}")
+        print(f"Error fetching route: {e} for URL: {route_url}")
+        if e.response is not None and "InsufficientFunds" in e.response.text:
+            raise Exception("TomTom API: Insufficient credits. Please add credits to your account.")
         return None
