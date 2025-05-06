@@ -4,7 +4,6 @@ import joblib
 from fetch_tomtom import get_traffic_data, get_incident_data
 from fetch_openweather import get_weather_data
 
-# Updated with your new TomTom API key
 TOMTOM_API_KEY = "I964aUjk3OZ8GBAIMd7tqtjOU5Bs76Nm"
 OPENWEATHERMAP_API_KEY = "5c3bc13964691a682f63c98f718091e5"
 
@@ -149,19 +148,29 @@ def get_route_with_traffic(start_lat, start_lon, end_lat, end_lon, city_name):
         travel_time_minutes = route['summary']['travelTimeInSeconds'] / 60
         distance_km = route['summary']['lengthInMeters'] / 1000
 
-        # Collect all coordinates
+        # Collect all coordinates for the full route
         coordinates = []
         for leg in route['legs']:
             for point in leg['points']:
                 coordinates.append([point['latitude'], point['longitude']])
 
-        # Ensure continuous segments with smaller granularity
+        # Ensure coordinates start and end exactly at the provided locations
+        if coordinates:
+            coordinates[0] = [start_lat, start_lon]  # Force start point
+            coordinates[-1] = [end_lat, end_lon]     # Force end point
+
+        # Create segments with smaller granularity, ensuring continuity
         segments = []
         segment_size = max(2, len(coordinates) // 10)  # Dynamic segment size based on route length
-        for i in range(0, len(coordinates), segment_size):
-            segment_coords = coordinates[i:i + segment_size]
+        i = 0
+        while i < len(coordinates):
+            # Take segment up to segment_size, but ensure we don't overshoot
+            end_idx = min(i + segment_size, len(coordinates))
+            segment_coords = coordinates[i:end_idx]
             if len(segment_coords) < 2:
-                continue
+                break  # Skip if segment is too small
+
+            # Estimate congestion for this segment
             mid_point = segment_coords[len(segment_coords) // 2]
             traffic_data = get_traffic_data(None, mid_point[0], mid_point[1])
             congestion_level = estimate_congestion(traffic_data, {}, {}, city_name) if traffic_data else "Unknown"
@@ -170,9 +179,12 @@ def get_route_with_traffic(start_lat, start_lon, end_lat, end_lon, city_name):
                 'congestion_level': congestion_level
             })
 
-        # Ensure the last segment includes remaining points
-        if coordinates and i + segment_size < len(coordinates):
-            last_segment = coordinates[i:]
+            # Move to the next segment, ensuring overlap to avoid gaps
+            i += segment_size - 1
+
+        # Ensure the last segment includes the end point
+        if coordinates and i < len(coordinates):
+            last_segment = coordinates[i-1:] if i > 0 else coordinates
             if len(last_segment) >= 2:
                 mid_point = last_segment[len(last_segment) // 2]
                 traffic_data = get_traffic_data(None, mid_point[0], mid_point[1])
