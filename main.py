@@ -92,7 +92,7 @@ def estimate_congestion(traffic, weather, incidents, city_name):
         }
         weather_condition = weather_map.get(weather_condition, 'clear')
 
-        # Prepare input data
+        # Prepare input data with feature names matching training
         input_data = pd.DataFrame({
             'location': [city_name],
             'current_speed': [current_speed],
@@ -106,12 +106,12 @@ def estimate_congestion(traffic, weather, incidents, city_name):
         # One-hot encode categorical features
         input_data = pd.get_dummies(input_data, columns=['location', 'weather_condition'], drop_first=True)
 
-        # Align with training columns in one step
+        # Align with training columns (model.feature_names_in_)
         input_data = input_data.reindex(columns=model.feature_names_in_, fill_value=0)
 
-        # Scale numerical features
+        # Scale numerical features with proper feature names
         numerical_cols = ['current_speed', 'free_flow_speed', 'incident_count', 'temperature', 'wind_speed']
-        numerical_data = input_data[numerical_cols].values
+        numerical_data = input_data[numerical_cols]  # Keep as DataFrame to preserve column names
         scaled_data = scaler.transform(numerical_data)
         for i, col in enumerate(numerical_cols):
             input_data[col] = scaled_data[:, i]
