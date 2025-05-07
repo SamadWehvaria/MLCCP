@@ -1,6 +1,6 @@
 import requests
 
-TOMTOM_API_KEY = "zy5PaNZytiCexgFfx4zdvIYPrpfKAal3"
+TOMTOM_API_KEY = "I964aUjk3OZ8GBAIMd7tqtjOU5Bs76Nm"
 
 def get_traffic_data(bbox, lat, lon):
     """
